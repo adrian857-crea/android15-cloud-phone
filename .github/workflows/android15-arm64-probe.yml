@@ -1,0 +1,63 @@
+
+name: Android 15 ARM64 - Host Diagnostics
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
+
+    steps:
+      - name: Diagnosticar ambiente
+        shell: bash
+        run: |
+          mkdir -p diagnostics
+
+          {
+            echo "=== Sistema operacional ==="
+            uname -a
+
+            echo
+            echo "=== Arquitetura ==="
+            uname -m
+
+            echo
+            echo "=== CPU ==="
+            lscpu || true
+
+            echo
+            echo "=== Memoria ==="
+            free -h
+
+            echo
+            echo "=== Armazenamento ==="
+            df -h
+
+            echo
+            echo "=== KVM ==="
+            if [ -e /dev/kvm ]; then
+              ls -l /dev/kvm
+              echo "KVM_DEVICE=AVAILABLE"
+            else
+              echo "KVM_DEVICE=UNAVAILABLE"
+            fi
+
+            echo
+            echo "=== Usuario e grupos ==="
+            id
+            groups
+
+          } 2>&1 | tee diagnostics/host.txt
+
+      - name: Salvar diagnostico
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-host-diagnostics
+          path: diagnostics/
+          retention-days: 7
