@@ -1,0 +1,115 @@
+
+name: Android 15 ARM64 - Emulator Compatibility Test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  emulator-test:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+
+    steps:
+      - name: Preparar Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Instalar ferramentas Android
+        uses: android-actions/setup-android@v3
+
+      - name: Aceitar licencas e instalar SDK
+        shell: bash
+        run: |
+          set -uo pipefail
+
+          mkdir -p diagnostics
+
+          yes | sdkmanager --licenses \
+            > diagnostics/licenses.txt 2>&1 || true
+
+          sdkmanager --install \
+            "platform-tools" \
+            "platforms;android-35" \
+            "emulator" \
+            "system-images;android-35;google_apis;arm64-v8a" \
+            > diagnostics/sdk-install.txt 2>&1 || true
+
+          {
+            echo "=== Host ==="
+            uname -a
+            uname -m
+
+            echo
+            echo "=== Java ==="
+            java -version 2>&1 || true
+
+            echo
+            echo "=== SDK ==="
+            sdkmanager --list_installed 2>&1 || true
+
+            echo
+            echo "=== Emulator binary ==="
+            if [ -x "$ANDROID_HOME/emulator/emulator" ]; then
+              file "$ANDROID_HOME/emulator/emulator" || true
+              "$ANDROID_HOME/emulator/emulator" -version \
+                2>&1 || true
+              "$ANDROID_HOME/emulator/emulator" -accel-check \
+                2>&1 || true
+            else
+              echo "EMULATOR_BINARY_MISSING"
+            fi
+
+            echo
+            echo "=== KVM ==="
+            ls -l /dev/kvm 2>&1 || true
+          } | tee diagnostics/compatibility.txt
+
+      - name: Tentar criar dispositivo virtual
+        shell: bash
+        run: |
+          mkdir -p diagnostics
+          set +e
+
+          echo "no" | avdmanager create avd \
+            -n Android15ARM64 \
+            -k "system-images;android-35;google_apis;arm64-v8a" \
+            -d pixel_2 \
+            > diagnostics/avd-create.txt 2>&1
+
+          CREATE_RESULT=$?
+          echo "AVD_CREATE_EXIT=$CREATE_RESULT" \
+            | tee -a diagnostics/avd-create.txt
+
+          if [ "$CREATE_RESULT" -eq 0 ]; then
+            timeout 180s emulator \
+              -avd Android15ARM64 \
+              -no-window \
+              -no-audio \
+              -no-boot-anim \
+              -no-snapshot \
+              -gpu swiftshader_indirect \
+              -verbose \
+              > diagnostics/emulator-boot.txt 2>&1
+
+            echo "EMULATOR_EXIT=$?" \
+              | tee -a diagnostics/emulator-boot.txt
+          else
+            echo "Emulador nao iniciado: criacao do AVD falhou." \
+              | tee diagnostics/emulator-boot.txt
+          fi
+
+          exit 0
+
+      - name: Salvar diagnosticos
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android15-emulator-test
+          path: diagnostics/
+          retention-days: 7
+          if-no-files-found: warn
