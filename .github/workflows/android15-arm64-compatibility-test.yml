@@ -1,0 +1,136 @@
+name: Android 15 ARM64 - Compatibility Test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  arm64-test:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+
+    steps:
+      - name: Preparar Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Instalar ferramentas Android
+        uses: android-actions/setup-android@v3
+
+      - name: Instalar imagem Android 15 ARM64
+        shell: bash
+        run: |
+          mkdir -p diagnostics
+          yes | sdkmanager --licenses > diagnostics/licenses.txt 2>&1 || true
+          set +e
+          sdkmanager --install \
+            "platform-tools" \
+            "platforms;android-35" \
+            "emulator" \
+            "system-images;android-35;google_apis;arm64-v8a" \
+            > diagnostics/sdk-install.txt 2>&1
+          RESULT=$?
+          echo "SDK_INSTALL_EXIT=$RESULT" >> diagnostics/sdk-install.txt
+          {
+            echo '=== Host architecture ==='
+            uname -m
+            echo
+            echo '=== CPU ==='
+            lscpu
+            echo
+            echo '=== KVM ==='
+            ls -l /dev/kvm 2>&1
+            echo
+            echo '=== Emulator binary ==='
+            if [ -f "$ANDROID_HOME/emulator/emulator" ]; then
+              file "$ANDROID_HOME/emulator/emulator"
+              "$ANDROID_HOME/emulator/emulator" -version
+            else
+              echo 'Emulator binary not found'
+            fi
+            echo
+            echo '=== Installed packages ==='
+            sdkmanager --list_installed
+          } > diagnostics/host.txt 2>&1
+          exit "$RESULT"
+
+      - name: Criar e testar dispositivo ARM64
+        shell: bash
+        run: |
+          mkdir -p diagnostics
+          set +e
+          echo no | avdmanager create avd --force \
+            -n Android15_ARM64 \
+            -k 'system-images;android-35;google_apis;arm64-v8a' \
+            -d pixel_2 > diagnostics/avd-create.txt 2>&1
+          CREATE_RESULT=$?
+          echo "AVD_CREATE_EXIT=$CREATE_RESULT" >> diagnostics/avd-create.txt
+          if [ "$CREATE_RESULT" -ne 0 ]; then
+            echo 'Falha ao criar o dispositivo virtual.' > diagnostics/boot-result.txt
+            exit 1
+          fi
+
+          EMULATOR="$ANDROID_HOME/emulator/emulator"
+          if [ ! -x "$EMULATOR" ]; then
+            echo 'Binário do emulador ausente ou não executável.' > diagnostics/boot-result.txt
+            exit 1
+          fi
+
+          if ! "$EMULATOR" -version > diagnostics/emulator-version.txt 2>&1; then
+            echo 'O binário do emulador não executa nesta máquina ARM64.' > diagnostics/boot-result.txt
+            exit 1
+          fi
+
+          if [ ! -e /dev/kvm ]; then
+            echo 'KVM não disponível; teste de inicialização interrompido para evitar uma execução por software possivelmente inviável.' > diagnostics/boot-result.txt
+            exit 1
+          fi
+
+          "$EMULATOR" -avd Android15_ARM64 \
+            -no-window -no-audio -no-boot-anim -no-snapshot \
+            -gpu swiftshader_indirect -accel on -verbose \
+            > diagnostics/emulator.log 2>&1 &
+          PID=$!
+          echo "EMULATOR_PID=$PID" >> diagnostics/boot-result.txt
+          BOOT_OK=0
+          for i in $(seq 1 600); do
+            adb start-server >/dev/null 2>&1
+            if [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = '1' ]; then
+              BOOT_OK=1
+              break
+            fi
+            if ! kill -0 "$PID" 2>/dev/null; then
+              echo 'O emulador encerrou antes de iniciar.' >> diagnostics/boot-result.txt
+              break
+            fi
+            sleep 1
+          done
+          {
+            echo "ANDROID_BOOT_COMPLETED=$BOOT_OK"
+            echo '=== ADB devices ==='
+            adb devices -l
+            echo '=== Android release ==='
+            adb shell getprop ro.build.version.release
+            echo '=== API level ==='
+            adb shell getprop ro.build.version.sdk
+            echo '=== Guest ABI ==='
+            adb shell getprop ro.product.cpu.abi
+            echo '=== Supported ABIs ==='
+            adb shell getprop ro.product.cpu.abilist
+          } >> diagnostics/boot-result.txt 2>&1
+          kill "$PID" 2>/dev/null
+          wait "$PID" 2>/dev/null
+          if [ "$BOOT_OK" -ne 1 ]; then exit 1; fi
+
+      - name: Salvar diagnósticos
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android15-arm64-compatibility-test
+          path: diagnostics/
+          retention-days: 7
+          if-no-files-found: warn
