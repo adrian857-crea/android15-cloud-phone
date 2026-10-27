@@ -31,7 +31,7 @@ jobs:
           set +e
 
           yes | sdkmanager --licenses \
-            > diagnostics/licenses.txt 2>&1
+            > diagnostics/licenses.txt 2>&1 || true
 
           sdkmanager --install \
             "platforms;android-35" \
